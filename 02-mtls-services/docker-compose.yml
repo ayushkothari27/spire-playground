@@ -1,0 +1,85 @@
+# Use ./scripts/up.sh to start this. It creates the trust bundle and join token
+# the agent needs, and registers the workloads.
+services:
+  # The SPIRE server: issues identities and holds the list of registration entries.
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.14.0
+    # Run as root to avoid volume permission issues in this local demo.
+    user: "0"
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    volumes:
+      - ./conf/server:/opt/spire/conf/server:ro
+      # Keeps the database and keys across restarts.
+      - server-data:/opt/spire/data/server
+    # Other services wait until this check passes.
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 2s
+      retries: 30
+
+  # The SPIRE agent: proves itself to the server, then gives certs to local workloads.
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.14.0
+    # JOIN_TOKEN comes from .env (written by up.sh); it can only be used once.
+    command: ["-config", "/opt/spire/conf/agent/agent.conf", "-joinToken", "${JOIN_TOKEN:-run-scripts-up-sh}"]
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./conf/agent:/opt/spire/conf/agent:ro
+      # Shared with the workloads so they can reach the Workload API socket.
+      - agent-sockets:/run/spire/sockets
+      # Keeps the agent's identity so a restart doesn't need a new join token.
+      - agent-data:/opt/spire/data/agent
+    healthcheck:
+      # Checks the agent through its Workload API socket.
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
+      interval: 2s
+      retries: 30
+
+  # The workloads below share the agent's process namespace (pid: service:...),
+  # so the agent can see their processes and read their Unix UIDs.
+  # The UID decides the identity: 1001 = server, 1002 = client, 1003 = intruder.
+  server:
+    build: ./app
+    user: "1001"
+    pid: "service:spire-agent"
+    environment:
+      MODE: server
+    volumes:
+      # Read-only access to the agent socket; this is the only setup the app needs.
+      - agent-sockets:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+
+  # Calls the server every 5 seconds over mTLS.
+  client:
+    build: ./app
+    user: "1002"
+    pid: "service:spire-agent"
+    environment:
+      MODE: client
+    volumes:
+      - agent-sockets:/run/spire/sockets:ro
+    depends_on: [server]
+
+  # Same code as the client, but UID 1003 gets a different SPIFFE ID, so the server rejects it.
+  # Start with: docker compose --profile intruder up -d intruder
+  intruder:
+    build: ./app
+    user: "1003"
+    pid: "service:spire-agent"
+    # Only starts when you ask for the "intruder" profile.
+    profiles: ["intruder"]
+    environment:
+      MODE: client
+    volumes:
+      - agent-sockets:/run/spire/sockets:ro
+    depends_on: [server]
+
+# Named Docker volumes, all deleted by scripts/down.sh.
+volumes:
+  server-data:
+  agent-data:
+  agent-sockets:

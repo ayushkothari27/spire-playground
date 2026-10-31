@@ -1,0 +1,5 @@
+# Created by scripts/up.sh for each run; they only work with that server.
+conf/agent/bootstrap.crt
+.env
+# Certs you fetch during the walkthrough.
+out/
