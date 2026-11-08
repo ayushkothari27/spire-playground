@@ -81,6 +81,9 @@ func runClient(source *workloadapi.X509Source) {
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeID(serverID)),
+			// New connection (and TLS handshake) for every request. Certs are only checked
+			// during a handshake, so with reused connections an expired cert goes unnoticed.
+			DisableKeepAlives: true,
 		},
 	}
 

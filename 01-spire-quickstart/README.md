@@ -131,6 +131,61 @@ docker compose logs spire-agent                          # watch attestation in 
 ./scripts/down.sh                                        # stop and delete everything
 ```
 
+## Exercises
+
+Start each exercise fresh (about 30 seconds):
+
+```sh
+./scripts/down.sh && ./scripts/up.sh
+alias server='docker compose exec spire-server /opt/spire/bin/spire-server'
+fetchas() { docker compose exec -u "$1" spire-agent /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spire/sockets/agent.sock; }
+```
+
+`fetchas 1000` means "run `fetch` as UID 1000". `fetchas 1002:2000` means UID 1002, group 2000.
+
+After creating an entry, **wait about 10 seconds** before fetching. The agent picks up new entries from the server every 5 seconds or so.
+If you get `no identity issued` right after creating one, wait 5 more seconds and retry.
+
+### Exercise 1: two identities on one machine (10 min)
+
+**Goal:** see that *which process is calling* decides the identity.
+
+1. Register two workloads:
+   ```sh
+   server entry create -parentID spiffe://example.org/agent -spiffeID spiffe://example.org/frontend -selector unix:uid:1000
+   server entry create -parentID spiffe://example.org/agent -spiffeID spiffe://example.org/backend  -selector unix:uid:1001
+   ```
+2. Wait 10 seconds, then fetch as each user:
+   ```sh
+   fetchas 1000 | grep "SPIFFE ID"    # → spiffe://example.org/frontend
+   fetchas 1001 | grep "SPIFFE ID"    # → spiffe://example.org/backend
+   fetchas 1002                       # → no identity issued
+   ```
+3. Bonus: register a **second** entry for UID 1000 (`-spiffeID spiffe://example.org/frontend-v2 -selector unix:uid:1000`), then `fetchas 1000` again.
+   You'll get `Received 2 svids`. One process can hold several identities.
+
+**What you learned:** same machine and same command, but the caller's UID decides the identity.
+
+### Exercise 3: several selectors = ALL must match (10 min)
+
+**Goal:** see that selectors on one entry combine with AND.
+
+1. Register an entry that needs UID 1002 **and** group 2000:
+   ```sh
+   server entry create -parentID spiffe://example.org/agent -spiffeID spiffe://example.org/admin \
+     -selector unix:uid:1002 -selector unix:gid:2000
+   ```
+2. Wait 10 seconds, then try 3 callers:
+
+   | Command | UID | Group | Result |
+   |---|---|---|---|
+   | `fetchas 1002:1002` | ✅ | ❌ | `no identity issued` |
+   | `fetchas 1003:2000` | ❌ | ✅ | `no identity issued` |
+   | `fetchas 1002:2000` | ✅ | ✅ | `spiffe://example.org/admin` |
+
+**What you learned:** more selectors make an entry *stricter*. In real setups this is how you say
+"only this user, running this binary, in this group."
+
 ## Files
 
 | File | What it is |

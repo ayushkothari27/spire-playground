@@ -40,9 +40,42 @@ OK: "hello spiffe://example.org/client, the time is 21:29:34" | my cert serial â
 | Try | What you'll see |
 |---|---|
 | `docker compose --profile intruder up -d intruder`<br>`docker compose logs intruder server` | Intruder: `tls: bad certificate`. Server: `unexpected ID "spiffe://example.org/intruder"` |
-| `docker compose stop spire-agent`, wait ~1 min, then `docker compose start spire-agent` | Certs expire, requests fail, then recover once the agent is back. Short TTLs limit the damage from a stolen cert. |
+| Exercise 4 below | Certs expire when the agent is frozen, then recover on their own |
 | Set `ALLOWED_CLIENT_ID: spiffe://example.org/intruder` on `server` in `docker-compose.yml`, then `docker compose up -d server` | The roles swap: the client is now rejected and the intruder gets in |
 | `docker compose exec spire-server /opt/spire/bin/spire-server entry show` | The 3 registration entries (UID â†’ SPIFFE ID) |
+
+## Exercise 4: freeze the agent and watch certs expire (5 min)
+
+**Goal:** see that certs really expire, and that apps recover on their own when the agent comes back.
+
+1. Start fresh and open the client logs in one terminal:
+   ```sh
+   ./scripts/down.sh && ./scripts/up.sh
+   docker compose logs -f client
+   ```
+2. In a **second terminal** (same folder), freeze the agent:
+   ```sh
+   docker compose pause spire-agent
+   ```
+3. Watch the client for about 1 minute. Requests keep working until the current certs expire, then:
+   ```
+   FAILED: ... x509: certificate has expired or is not yet valid
+   ```
+4. Unfreeze the agent:
+   ```sh
+   docker compose unpause spire-agent
+   ```
+5. Within about 5 seconds the client prints `OK` again, with a **new** cert serial. Nothing was restarted.
+
+**Why `pause` and not `stop`?** The apps share the agent's process list (`pid: service:spire-agent`).
+The agent is process #1 there, so stopping it kills the apps too (exit code 137). `pause` freezes it instead.
+
+**What you learned:**
+- A cert stolen from this system is useless after at most 1 minute.
+- Apps get new certs automatically once the agent is reachable again.
+- Certs are only checked during the **TLS handshake**. The client sets `DisableKeepAlives: true`, so
+  every request makes a new connection. With reused connections (the Go default), a connection opened before
+  expiry keeps working after it. Try removing that line in `app/main.go` and repeating the exercise.
 
 ## How it works
 
